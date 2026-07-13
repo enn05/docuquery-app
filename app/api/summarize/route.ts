@@ -1,10 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
-import {
-  anthropic,
-  MODEL,
-  MAX_INPUT_CHARS,
-  REQUEST_TIMEOUT_MS,
-} from "@/lib/anthropic";
+import { anthropic, MODEL, REQUEST_TIMEOUT_MS } from "@/lib/anthropic";
+import { MAX_INPUT_CHARS } from "@/lib/limits";
 
 const SYSTEM_PROMPT =
   "You summarize documents for accountants. Be concise and factual. " +

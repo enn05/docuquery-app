@@ -1,17 +1,56 @@
 "use client";
 
-import { useState } from "react";
-
-const MAX_INPUT_CHARS = 50_000;
+import { useRef, useState } from "react";
+import { ACCEPTED_EXTENSIONS, MAX_INPUT_CHARS } from "@/lib/limits";
 
 export default function Home() {
   const [text, setText] = useState("");
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const overLimit = text.length > MAX_INPUT_CHARS;
-  const canSubmit = text.trim().length > 0 && !overLimit && !loading;
+  const busy = loading || uploading;
+  const canSubmit = text.trim().length > 0 && !overLimit && !busy;
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setError("");
+    setNotice("");
+    setSummary("");
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/extract", { method: "POST", body: form });
+      const data = await res.json();
+
+      if (!res.ok) {
+        // Leave any text the user already pasted intact — a failed upload
+        // shouldn't destroy unrelated work.
+        setError(data.error ?? "Could not read that file.");
+      } else {
+        setText(data.text);
+        setNotice(
+          data.truncated
+            ? `Loaded "${data.filename}" — the document was ${data.originalChars.toLocaleString()} characters and has been truncated to ${MAX_INPUT_CHARS.toLocaleString()}. Only the first part will be summarized.`
+            : `Loaded "${data.filename}" (${data.originalChars.toLocaleString()} characters).`,
+        );
+      }
+    } catch {
+      setError("Upload failed. Check your connection and try again.");
+    } finally {
+      setUploading(false);
+      // Reset so re-selecting the same file fires a change event again.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
 
   async function handleSummarize() {
     setLoading(true);
@@ -44,17 +83,48 @@ export default function Home() {
             DocuQuery
           </h1>
           <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            Paste a document and get a concise, factual AI summary.
+            Upload a document or paste text, then get a concise, factual AI summary.
           </p>
         </header>
 
         <div className="flex flex-col gap-2">
+          <label
+            htmlFor="file"
+            className="text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            Upload a document
+          </label>
+          <input
+            id="file"
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_EXTENSIONS}
+            onChange={handleFileChange}
+            disabled={busy}
+            className="w-full cursor-pointer rounded-lg border border-zinc-300 bg-white p-2 text-sm text-black file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-zinc-900 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-white disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:file:bg-zinc-50 dark:file:text-black"
+          />
+          <p className="text-xs text-zinc-500">
+            .txt or .pdf, up to 5 MB. Scanned PDFs have no text layer and cannot be read.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label
+            htmlFor="text"
+            className="text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
+            Document text
+          </label>
           <textarea
+            id="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="Paste document text here…"
+            placeholder={
+              uploading ? "Reading file…" : "Paste document text here, or upload a file above…"
+            }
             rows={12}
-            className="w-full resize-y rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+            disabled={uploading}
+            className="w-full resize-y rounded-lg border border-zinc-300 bg-white p-3 text-sm text-black outline-none focus:border-zinc-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           />
           <div className="flex items-center justify-between text-xs">
             <span className={overLimit ? "text-red-600" : "text-zinc-500"}>
@@ -70,8 +140,20 @@ export default function Home() {
           </div>
         </div>
 
+        {notice && (
+          <div
+            aria-live="polite"
+            className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+          >
+            {notice}
+          </div>
+        )}
+
         {error && (
-          <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          <div
+            role="alert"
+            className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+          >
             {error}
           </div>
         )}
