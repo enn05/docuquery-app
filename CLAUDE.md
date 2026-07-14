@@ -17,31 +17,43 @@ driving the running app (e.g. `curl -X POST localhost:3000/api/extract -F file=@
 DocuQuery — upload a document, get an AI summary, and (planned) ask questions answered via
 retrieval with citations. Next.js 16 App Router, TypeScript strict, Tailwind v4.
 
-Built in phases. **Shipped:** summarize (Phase 1), document upload (Phase 2).
-**Planned:** Zod structured extraction with a validate-and-retry loop (3), RAG — chunk /
-embed / cosine retrieve / cite (4), hardening — prompt-injection defense, rate limits, cost
-caps (5), README + deploy (6). See `context/` for the session log.
+Built in phases. **Shipped:** summarize (1), document upload (2), Zod structured extraction
+with a validate-and-retry loop (3), RAG — chunk / embed / cosine retrieve / cite (4).
+**Planned:** hardening — prompt-injection defense, rate limits, cost caps (5), README +
+deploy (6). See `context/` for the session log.
 
 ## Architecture
 
-Request flow:
+Everything starts from one piece of document text, surfaced in the UI textarea:
 
 ```
-file → POST /api/extract → text → (textarea, user-visible) → POST /api/summarize → summary
+file → POST /api/extract → text ─┬→ POST /api/summarize → prose summary
+                                 ├→ POST /api/analyze   → Zod-validated JSON (table)
+                                 └→ POST /api/index     → chunks + embeddings (documentId)
+                                                            ↓
+                                    question + documentId → POST /api/ask → cited answer
 ```
 
-**Extraction and summarization are separate routes on purpose.** Phases 3 and 4 both need
-raw document text (structured extraction; chunking for RAG), so extraction is not folded into
-the summarizer. Extracted text is surfaced in the UI textarea so the user sees exactly what
-the model will see — truncation and bad PDF parses are visible, not silent.
+**Extraction is its own route on purpose.** Three consumers need raw document text
+(summarize, structured extraction, chunking for RAG), so it is not folded into any one of
+them. Extracted text is shown in the textarea so the user sees exactly what the model will
+see — truncation and bad PDF parses are visible, not silent.
 
 | Module | Role |
 |---|---|
-| `lib/limits.ts` | Input limits shared by client **and** server |
+| `lib/limits.ts` | Limits shared by client **and** server (import-free — see invariants) |
 | `lib/anthropic.ts` | Anthropic client, `MODEL`, request timeout |
+| `lib/api.ts` | `readTextBody()` + `errorResponse()` — shared route plumbing |
 | `lib/extract.ts` | `truncateToLimit()` — enforces the model's input budget |
+| `lib/schema.ts` | Zod `ExtractionSchema`; prompt shape **derived** via `z.toJSONSchema()` |
+| `lib/chunk.ts` | Hand-rolled chunker (paragraph/sentence aware) + `cosine()` |
+| `lib/embeddings.ts` | Voyage AI embeddings, `EmbeddingError`, asymmetric doc/query types |
+| `lib/store.ts` | In-memory vector store keyed by `documentId` + top-k retrieval |
 | `app/api/extract/route.ts` | `FormData` → text (`unpdf` for PDFs) |
-| `app/api/summarize/route.ts` | text → Claude summary + token usage |
+| `app/api/summarize/route.ts` | text → Claude summary |
+| `app/api/analyze/route.ts` | text → validated JSON, with one retry on validation failure |
+| `app/api/index/route.ts` | text → chunks + embeddings → `documentId` |
+| `app/api/ask/route.ts` | question + `documentId` → retrieved excerpts → cited answer |
 
 ### Invariants — read before editing `lib/`
 
@@ -57,11 +69,21 @@ the model will see — truncation and bad PDF parses are visible, not silent.
   large, 415 unsupported type, 422 unreadable/scanned PDF, 429/502/504 upstream). Keep that
   mapping when adding routes.
 - Over-long documents are **truncated with a visible warning** — a deliberate v1 trade-off.
-  Retrieval (Phase 4) is the real fix; don't silently expand the cap instead.
+  Retrieval is the real fix for large *inputs*; don't silently expand the cap instead. Note
+  `max_tokens` truncation is a different problem — an **output** limit, which retrieval does
+  not help with (`/api/analyze` detects it via `stop_reason` and does not retry).
+- **Model output is untrusted until validated.** `/api/analyze` rejects anything failing
+  `safeParse`; `/api/ask` strips citations pointing at excerpts that were never supplied.
+  Never render unvalidated model output.
+- **Every question carries a `documentId`.** The store is keyed by it, so an answer can only
+  come from the document it was asked against — a single shared slot would let one visitor's
+  document answer another's question, and leak its text in the sources.
 
 ## Environment
-`ANTHROPIC_API_KEY` in `.env.local` (gitignored; see `.env.example`). `OPENAI_API_KEY` is only
-needed from Phase 4 (embeddings — Anthropic has no embeddings endpoint).
+Both keys go in `.env.local` (gitignored; see `.env.example`):
+- `ANTHROPIC_API_KEY` — generation (summaries, extraction, answers).
+- `VOYAGE_API_KEY` — embeddings for RAG. Anthropic has **no embeddings endpoint**; Voyage is
+  their recommended provider, and has a free token allowance.
 
 ⚠️ **A shell-exported `ANTHROPIC_API_KEY` overrides `.env.local` in Next.js.** A stale key in
 the environment will silently win and produce 401s that look like a bad `.env.local`. If auth
