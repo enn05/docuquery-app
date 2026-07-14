@@ -80,3 +80,23 @@ export const MAX_DOCUMENTS = 20;
  * scope, and has no business being pulled into the embeddings path.
  */
 export const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * Rate limit: requests per IP per window.
+ *
+ * Sized for a human using the app, not a script. Every route costs real money on
+ * an upstream API, so this is a spend control first and a load control second.
+ */
+export const RATE_LIMIT_MAX = 20;
+export const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+
+/**
+ * How many distinct clients the limiter tracks before it evicts.
+ *
+ * Bounds memory so a flood of distinct IPs cannot grow the map without limit.
+ * Lives here with the other rate-limit knobs, not next to the code that uses it.
+ */
+export const MAX_TRACKED_IPS = 10_000;
+
+// Model pricing is NOT here. It belongs with MODEL in lib/anthropic.ts: pricing
+// and model choice are one decision, and this module is imported by the browser.

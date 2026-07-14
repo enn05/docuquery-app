@@ -1,3 +1,4 @@
+import { rateLimit } from "@/lib/api";
 import { extractText, getDocumentProxy } from "unpdf";
 import { truncateToLimit } from "@/lib/extract";
 import { MAX_FILE_BYTES, MIN_EXTRACTED_CHARS } from "@/lib/limits";
@@ -16,6 +17,11 @@ function isPlainText(file: File) {
 }
 
 export async function POST(request: Request) {
+  // Rate limit first — before parsing, before any upstream call, so a limited
+  // caller costs nothing but a Map lookup.
+  const limited = rateLimit(request);
+  if (limited) return limited;
+
   // 1. Parse the multipart body.
   let form: FormData;
   try {

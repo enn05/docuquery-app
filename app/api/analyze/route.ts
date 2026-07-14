@@ -1,14 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { anthropic, MODEL, REQUEST_TIMEOUT_MS } from "@/lib/anthropic";
-import { errorResponse, readTextBody } from "@/lib/api";
-import { MAX_EXTRACTION_TOKENS } from "@/lib/limits";
+import { anthropic, MODEL } from "@/lib/anthropic";
+import { errorResponse, logUsage, rateLimit, readTextBody } from "@/lib/api";
+import { MAX_EXTRACTION_TOKENS, REQUEST_TIMEOUT_MS } from "@/lib/limits";
+import { fenceDocument, untrustedContentRule } from "@/lib/prompt";
 import { ExtractionSchema, SCHEMA_FOR_PROMPT } from "@/lib/schema";
 
 /** One retry after the first failure. Two attempts total, then we give up. */
 const MAX_ATTEMPTS = 2;
 
-const SYSTEM_PROMPT = `You extract structured data from documents for accountants.
+function systemPrompt(nonce: string): string {
+  return `You extract structured data from documents for accountants.
 
 Return ONLY a JSON object conforming to this JSON Schema — no prose, no explanation, no markdown code fences:
 
@@ -19,7 +21,10 @@ Rules:
 - If a field has no values in the document, return an empty array for it.
 - Emit ONLY the fields defined in the schema. Do not add extra keys of your own — every
   unrequested key consumes output budget and risks the reply being cut off.
-- Keep each "description" to a few words.`;
+- Keep each "description" to a few words.
+
+${untrustedContentRule(nonce)}`;
+}
 
 /**
  * Models sometimes wrap JSON in ```json fences despite being told not to.
@@ -39,15 +44,21 @@ function textOf(message: Anthropic.Message): string {
 }
 
 export async function POST(request: Request) {
+  // Rate limit first — before parsing, before any upstream call, so a limited
+  // caller costs nothing but a Map lookup.
+  const limited = rateLimit(request);
+  if (limited) return limited;
+
   const body = await readTextBody(request);
   if (!body.ok) return body.response;
 
   // The running conversation. On a failed attempt we append the model's bad
   // output plus the validation error, so the retry can see what it got wrong.
+  const fenced = fenceDocument(body.text);
   const messages: Anthropic.MessageParam[] = [
     {
       role: "user",
-      content: `Extract structured data from this document:\n\n${body.text}`,
+      content: `Extract structured data from the document below.\n\n${fenced.block}`,
     },
   ];
 
@@ -61,7 +72,7 @@ export async function POST(request: Request) {
         {
           model: MODEL,
           max_tokens: MAX_EXTRACTION_TOKENS,
-          system: SYSTEM_PROMPT,
+          system: systemPrompt(fenced.nonce),
           messages,
         },
         { timeout: REQUEST_TIMEOUT_MS },
@@ -75,6 +86,9 @@ export async function POST(request: Request) {
       // so a retry just burns another full request reproducing the failure.
       // Bail out now and say what actually went wrong.
       if (message.stop_reason === "max_tokens") {
+        // Burned a full output cap. This is the single most expensive response
+        // the route can produce — it must not be logged as zero.
+        logUsage("/api/analyze", { input_tokens: inputTokens, output_tokens: outputTokens });
         return Response.json(
           {
             error:
@@ -106,6 +120,7 @@ export async function POST(request: Request) {
       // Step 2: does it match the schema? Never trust it without this.
       const result = ExtractionSchema.safeParse(candidate);
       if (result.success) {
+        logUsage("/api/analyze", { input_tokens: inputTokens, output_tokens: outputTokens });
         return Response.json({
           data: result.data,
           attempts: attempt,
@@ -124,7 +139,10 @@ export async function POST(request: Request) {
       });
     }
 
-    // Both attempts failed. Return a clean error — never render unvalidated output.
+    // Both attempts failed — two complete model calls were paid for.
+    logUsage("/api/analyze", { input_tokens: inputTokens, output_tokens: outputTokens });
+
+    // Return a clean error — never render unvalidated output.
     return Response.json(
       {
         error: "The model could not produce data matching the required schema.",

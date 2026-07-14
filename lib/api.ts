@@ -1,17 +1,77 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { DimensionMismatchError } from "./chunk";
-import { EmbeddingError } from "./embeddings";
-import { MAX_INPUT_CHARS } from "./limits";
-
 /**
  * Shared route plumbing. Server-only (imports the Anthropic SDK) — never import
  * this from a client component.
  *
- * /api/summarize, /api/analyze, and /api/index all validate the same body, and
- * every route maps the same upstream failures. Keeping that in one place is not
- * just tidiness: when it was duplicated, two routes' 413 messages had already
- * silently diverged.
+ * Every route validates the same body shape and maps the same upstream failures.
+ * Keeping that in one place is not just tidiness: when it was duplicated, two
+ * routes' 413 messages had already silently diverged.
  */
+
+import Anthropic from "@anthropic-ai/sdk";
+import { EMBEDDING_USD_PER_MTOK, MODEL_PRICING } from "./anthropic";
+import { DimensionMismatchError } from "./chunk";
+import { EmbeddingError } from "./embeddings";
+import { MAX_INPUT_CHARS } from "./limits";
+import {
+  checkRateLimit,
+  clientKey,
+  rateLimitResponse,
+  type RateLimitResult,
+} from "./ratelimit";
+
+/**
+ * Gate a request on the per-IP rate limit. Returns a 429 to return immediately,
+ * or null to proceed. Called first in every route, before parsing and before any
+ * upstream call, so a limited caller costs nothing but a Map lookup.
+ *
+ * Fails OPEN when the caller cannot be identified (no x-forwarded-for, i.e. local
+ * dev). The alternative — bucketing every anonymous caller together — meant two
+ * people on one host would 429 each other, since a single document workflow is
+ * about five requests against a budget of twenty. On a real deployment the
+ * platform sets the header, so this path does not apply there.
+ */
+export function rateLimit(request: Request): Response | null {
+  const key = clientKey(request);
+  if (key === null) return null;
+  const result: RateLimitResult = checkRateLimit(key);
+  return result.allowed ? null : rateLimitResponse(result);
+}
+
+/**
+ * Log what a request cost, in tokens and in dollars.
+ *
+ * "What does a query cost?" should be answerable with a number, not a shrug.
+ *
+ * Two things this had to learn the hard way. It previously claimed "every model
+ * call goes through here" while embeddings — a whole paid provider — bypassed it
+ * entirely; and it was only called on success, so the *most expensive* outcomes
+ * (a truncated 8k-token extraction, or two failed attempts) were logged as
+ * nothing at all. An audit trail that under-reports exactly when spend spikes is
+ * worse than none, because it invites you to trust it.
+ *
+ * Rates come from lib/anthropic.ts, keyed by MODEL, so swapping models cannot
+ * silently multiply the numbers.
+ */
+export function logUsage(
+  route: string,
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    /** Voyage tokens, when the route also embedded something. */
+    embedding_tokens?: number;
+  },
+): void {
+  const embeddingTokens = usage.embedding_tokens ?? 0;
+  const usd =
+    (usage.input_tokens / 1_000_000) * MODEL_PRICING.input +
+    (usage.output_tokens / 1_000_000) * MODEL_PRICING.output +
+    (embeddingTokens / 1_000_000) * EMBEDDING_USD_PER_MTOK;
+
+  const embedPart = embeddingTokens > 0 ? ` embed=${embeddingTokens}` : "";
+  console.info(
+    `[cost] ${route} in=${usage.input_tokens} out=${usage.output_tokens}${embedPart} ≈ $${usd.toFixed(5)}`,
+  );
+}
 
 export type TextBody =
   /** `raw` carries the rest of the parsed body, for routes that take extra fields. */
