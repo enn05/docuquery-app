@@ -33,6 +33,63 @@ export type Chunk = {
 };
 
 /**
+ * Break a paragraph that is larger than one chunk into chunk-sized pieces.
+ *
+ * This walks the string from start to end, so **every character is emitted
+ * exactly once**. That property is the whole point.
+ *
+ * The previous implementation matched sentences with a regex and kept whatever
+ * it matched. On prose that worked. On a PDF table flattened to a single line —
+ * no newlines, and every "." a decimal point rather than a sentence end — the
+ * only sub-pattern that could match was the run of text after the final period,
+ * so a 2,631-character document produced one 177-character chunk and silently
+ * discarded the other 94%. Retrieval then answered from the scraps and honestly
+ * reported that the data was not there.
+ *
+ * A splitter is allowed to cut text in an awkward place. It is never allowed to
+ * lose it. Hence: walk, don't match.
+ */
+function splitOversizedParagraph(paragraph: string): string[] {
+  const pieces: string[] = [];
+  let start = 0;
+
+  while (start < paragraph.length) {
+    let end = Math.min(start + CHUNK_CHARS, paragraph.length);
+
+    // Not the final piece — prefer a natural boundary, but only if it falls in
+    // the back half of the window. A boundary too near the start would produce
+    // tiny pieces and a lot of them.
+    if (end < paragraph.length) {
+      const window = paragraph.slice(start, end);
+      const floor = Math.floor(CHUNK_CHARS / 2);
+
+      const sentenceEnd = Math.max(
+        window.lastIndexOf(". "),
+        window.lastIndexOf("! "),
+        window.lastIndexOf("? "),
+        window.lastIndexOf("\n"),
+      );
+      const wordEnd = window.lastIndexOf(" ");
+
+      if (sentenceEnd > floor) {
+        end = start + sentenceEnd + 1;
+      } else if (wordEnd > floor) {
+        // Break between words rather than mid-token, so numbers and names in a
+        // table are not sliced in half.
+        end = start + wordEnd;
+      }
+      // Otherwise fall through: a hard cut at CHUNK_CHARS. Ugly, but lossless.
+    }
+
+    const piece = paragraph.slice(start, end).trim();
+    if (piece.length > 0) pieces.push(piece);
+    start = end;
+  }
+
+  return pieces;
+}
+
+/**
  * Split text into overlapping chunks, preferring to break at paragraph
  * boundaries and falling back to sentence boundaries, so chunks stay
  * semantically coherent rather than cutting mid-thought.
@@ -50,21 +107,8 @@ export function chunkText(input: string): Chunk[] {
       pieces.push(para.trim());
       continue;
     }
-    // Paragraph is bigger than a whole chunk — break it into sentences.
-    const sentences = para.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) ?? [para];
-    for (const sentence of sentences) {
-      const s = sentence.trim();
-      if (s.length === 0) continue;
-      if (s.length <= CHUNK_CHARS) {
-        pieces.push(s);
-      } else {
-        // A single sentence longer than a chunk (a table, a wall of text with no
-        // punctuation). Hard-split it — there is no natural boundary to use.
-        for (let i = 0; i < s.length; i += CHUNK_CHARS) {
-          pieces.push(s.slice(i, i + CHUNK_CHARS));
-        }
-      }
-    }
+    // Paragraph is bigger than a whole chunk — break it up.
+    pieces.push(...splitOversizedParagraph(para));
   }
 
   // Greedily pack pieces into chunks up to the size budget.
@@ -100,14 +144,6 @@ export function chunkText(input: string): Chunk[] {
 }
 
 /**
- * Cosine similarity: the cosine of the angle between two vectors.
- *
- * An embedding places text in a space where semantic closeness ≈ geometric
- * closeness. Cosine ignores magnitude and measures only direction, so it
- * compares *what the text means* rather than how long it is. Returns roughly
- * -1 (opposite) to 1 (identical).
- */
-/**
  * Vectors from different embedding models cannot be compared.
  *
  * Typed rather than a plain Error so routes can map it to a **409** — the stored
@@ -125,6 +161,14 @@ export class DimensionMismatchError extends Error {
   }
 }
 
+/**
+ * Cosine similarity: the cosine of the angle between two vectors.
+ *
+ * An embedding places text in a space where semantic closeness ≈ geometric
+ * closeness. Cosine ignores magnitude and measures only direction, so it
+ * compares *what the text means* rather than how long it is. Returns roughly
+ * -1 (opposite) to 1 (identical).
+ */
 export function cosine(a: number[], b: number[]): number {
   // Fail loudly on mismatched vectors. Without this the loop reads past the end
   // of the shorter one, producing NaN — which poisons the sort comparator
