@@ -16,11 +16,7 @@ export const anthropic = new Anthropic();
  */
 export const MODEL = "claude-opus-4-8";
 
-/**
- * Per-request timeout for API calls, in milliseconds (the TypeScript SDK takes
- * ms). Guards against a hung request holding the route open indefinitely.
- */
-export const REQUEST_TIMEOUT_MS = 60_000;
-
-// Input limits live in ./limits — that module is client-safe (no SDK import),
-// so the browser and the server validate against the same numbers.
+// Limits (including REQUEST_TIMEOUT_MS) live in ./limits — that module is
+// import-free, so both the browser and the embeddings path can use it without
+// dragging the Anthropic SDK client along.
+export { REQUEST_TIMEOUT_MS } from "./limits";

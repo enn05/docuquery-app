@@ -46,3 +46,37 @@ export const MIN_EXTRACTED_CHARS = 20;
  */
 export const MAX_SUMMARY_TOKENS = 1024;
 export const MAX_EXTRACTION_TOKENS = 8192;
+export const MAX_ANSWER_TOKENS = 1024;
+
+/**
+ * How many chunks to retrieve per question.
+ *
+ * A trade-off, not a default. Too few and the answer misses context sitting in a
+ * neighbouring chunk. Too many and the prompt fills with irrelevant text, which
+ * costs tokens and gives the model more room to drift off the source.
+ */
+export const TOP_K = 4;
+
+/**
+ * Cap on a single question.
+ *
+ * Without this, an unauthenticated caller can post a multi-megabyte "question"
+ * that gets embedded by Voyage *and* prepended to the Anthropic prompt — two
+ * paid APIs, uncapped. Questions are sentences; 1000 characters is generous.
+ */
+export const MAX_QUESTION_CHARS = 1_000;
+
+/**
+ * Most documents we will hold in the in-memory store at once. Bounded so a
+ * long-running server cannot grow it without limit.
+ */
+export const MAX_DOCUMENTS = 20;
+
+/**
+ * Per-request timeout for upstream API calls, in milliseconds.
+ *
+ * Lives here rather than in `anthropic.ts` so `embeddings.ts` can use it without
+ * importing the Anthropic module — which constructs an SDK client at module
+ * scope, and has no business being pulled into the embeddings path.
+ */
+export const REQUEST_TIMEOUT_MS = 60_000;
