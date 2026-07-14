@@ -29,3 +29,20 @@ export const ACCEPTED_EXTENSIONS = ".txt,.pdf";
  * text layer (an image of a page, not characters).
  */
 export const MIN_EXTRACTED_CHARS = 20;
+
+/**
+ * Output caps, per request. These bound cost and latency — the model cannot
+ * bill us for more output than this, regardless of what it wants to write.
+ *
+ * Extraction needs far more room than a summary: it emits one JSON entry per
+ * party, date, and amount, so a document with many line items produces a long
+ * response. At 2048 a 60-line invoice was cut off mid-string, and the resulting
+ * fragment was unparseable JSON.
+ *
+ * Raising this moves the wall, it does not remove it — a document with enough
+ * line items will still overflow. Note that this is an *output* limit; retrieval
+ * (which shrinks the input) does not help. The real fix for unbounded documents
+ * is to extract in batches. See the truncation handling in /api/analyze.
+ */
+export const MAX_SUMMARY_TOKENS = 1024;
+export const MAX_EXTRACTION_TOKENS = 8192;
