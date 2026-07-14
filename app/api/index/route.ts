@@ -1,4 +1,4 @@
-import { errorResponse, readTextBody } from "@/lib/api";
+import { errorResponse, logUsage, rateLimit, readTextBody } from "@/lib/api";
 import { chunkText } from "@/lib/chunk";
 import { embed } from "@/lib/embeddings";
 import { saveDocument, type StoredChunk } from "@/lib/store";
@@ -11,6 +11,11 @@ import { saveDocument, type StoredChunk } from "@/lib/store";
  * lib/store.ts for why a single shared slot was not safe.
  */
 export async function POST(request: Request) {
+  // Rate limit first — before parsing, before any upstream call, so a limited
+  // caller costs nothing but a Map lookup.
+  const limited = rateLimit(request);
+  if (limited) return limited;
+
   const body = await readTextBody(request);
   if (!body.ok) return body.response;
 
@@ -28,10 +33,17 @@ export async function POST(request: Request) {
   try {
     // One batched request for all chunks, not one request per chunk.
     // "document" — these are passages to be retrieved, not questions.
-    const vectors = await embed(
+    const { vectors, tokens } = await embed(
       chunks.map((c) => c.text),
       "document",
     );
+
+    // /api/index spends money and used to log nothing at all.
+    logUsage("/api/index", {
+      input_tokens: 0,
+      output_tokens: 0,
+      embedding_tokens: tokens,
+    });
 
     // embed() guarantees one vector per input, so this pairing is sound.
     const stored: StoredChunk[] = chunks.map((chunk, i) => ({

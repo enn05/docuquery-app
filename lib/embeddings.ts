@@ -1,4 +1,4 @@
-import { REQUEST_TIMEOUT_MS } from "./anthropic";
+import { REQUEST_TIMEOUT_MS } from "./limits";
 
 /**
  * Embeddings come from Voyage AI; generation comes from Anthropic.
@@ -33,6 +33,12 @@ export const EMBEDDING_MODEL = "voyage-4-lite";
  */
 export type InputType = "document" | "query";
 
+export type EmbedResult = {
+  vectors: number[][];
+  /** Voyage tokens billed for this call — the cost log needs them. */
+  tokens: number;
+};
+
 /**
  * A typed error carrying the upstream status, so routes can map an embeddings
  * failure to a real status code instead of collapsing everything into a 500.
@@ -60,8 +66,8 @@ export class EmbeddingError extends Error {
 export async function embed(
   texts: string[],
   inputType: InputType,
-): Promise<number[][]> {
-  if (texts.length === 0) return [];
+): Promise<EmbedResult> {
+  if (texts.length === 0) return { vectors: [], tokens: 0 };
 
   const apiKey = process.env.VOYAGE_API_KEY;
   if (!apiKey) {
@@ -128,5 +134,8 @@ export async function embed(
     throw new EmbeddingError("Malformed embeddings response: empty vector.");
   }
 
-  return vectors as number[][];
+  const tokens =
+    (json as { usage?: { total_tokens?: number } }).usage?.total_tokens ?? 0;
+
+  return { vectors: vectors as number[][], tokens };
 }
