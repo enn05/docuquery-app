@@ -1,8 +1,10 @@
 import { anthropic, MODEL } from "@/lib/anthropic";
 import { errorResponse, logUsage, rateLimit } from "@/lib/api";
 import { embed } from "@/lib/embeddings";
+import { indexDocument } from "@/lib/indexer";
 import {
   MAX_ANSWER_TOKENS,
+  MAX_INPUT_CHARS,
   MAX_QUESTION_CHARS,
   REQUEST_TIMEOUT_MS,
 } from "@/lib/limits";
@@ -85,9 +87,11 @@ export async function POST(request: Request) {
     return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
   }
 
-  const { question, documentId } = (body ?? {}) as {
+  const { question, documentId, text } = (body ?? {}) as {
     question?: unknown;
     documentId?: unknown;
+    /** The document itself, so a cache miss can be recovered from. */
+    text?: unknown;
   };
 
   if (typeof question !== "string" || question.trim().length === 0) {
@@ -113,24 +117,58 @@ export async function POST(request: Request) {
     );
   }
 
-  // The id binds the question to a specific indexed document. A miss means the
-  // document is gone (restart, cold start, or evicted) — never someone else's.
-  const document = getDocument(documentId);
-  if (!document) {
-    return Response.json(
-      { error: "That document is no longer indexed. Index it again to ask questions." },
-      { status: 409 },
-    );
-  }
-
   try {
-    // 1. Embed the question into the same space as the chunks.
+    // 1. Find the document, or rebuild it.
+    //
+    //    The store is a cache, not the source of truth. A miss is routine on
+    //    serverless — the question can land on a different instance than the one
+    //    that indexed, or after a redeploy — so we do not dead-end on it. The
+    //    client holds the document text and sends it along, and we re-embed it
+    //    inline. Re-embedding costs about two hundredths of a cent; being stuck
+    //    costs the user the feature.
+    //
+    //    The id still binds a question to *its* document: a miss rebuilds from
+    //    the text this caller supplied, never from someone else's cached copy.
+    const cached = getDocument(documentId);
+    let indexingTokens = 0;
+
+    if (!cached) {
+      if (typeof text !== "string" || text.trim().length === 0) {
+        return Response.json(
+          {
+            error:
+              "That document is no longer indexed, and no document text was supplied to rebuild it. Index it again.",
+          },
+          { status: 409 },
+        );
+      }
+      if (text.length > MAX_INPUT_CHARS) {
+        return Response.json(
+          {
+            error: `Document is too long (${text.length} chars). The limit is ${MAX_INPUT_CHARS}.`,
+          },
+          { status: 413 },
+        );
+      }
+    }
+
+    const rebuilt = cached ? null : await indexDocument(text as string);
+    const document = cached ?? rebuilt!.document;
+    if (rebuilt) {
+      indexingTokens = rebuilt.embeddingTokens;
+      console.info(
+        `[cache] /api/ask rebuilt document (${document.chunks.length} chunks) — store miss.`,
+      );
+    }
+
+    // 2. Embed the question into the same space as the chunks.
     //    "query" — embedded asymmetrically from the stored passages, which is
     //    what pulls a short question close to the long passage that answers it.
-    const { vectors, tokens: embeddingTokens } = await embed([question], "query");
+    const { vectors, tokens: queryTokens } = await embed([question], "query");
     const queryEmbedding = vectors[0];
+    const embeddingTokens = queryTokens + indexingTokens;
 
-    // 2. Retrieve the chunks whose meaning sits closest to it.
+    // 3. Retrieve the chunks whose meaning sits closest to it.
     // k defaults to TOP_K — one source of truth, in lib/limits.ts.
     const hits = retrieve(document, queryEmbedding);
 

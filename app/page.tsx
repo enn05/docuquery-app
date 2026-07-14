@@ -216,7 +216,10 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // The id binds this question to the document it was asked against.
-        body: JSON.stringify({ question: askedQuestion, documentId }),
+        // The text rides along so the server can rebuild its cache on a miss —
+        // routine on serverless, where the question can land on a different
+        // instance than the one that indexed. See lib/store.ts.
+        body: JSON.stringify({ question: askedQuestion, documentId, text }),
       });
       const data = await res.json();
 

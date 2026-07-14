@@ -4,24 +4,30 @@ import { MAX_DOCUMENTS, TOP_K } from "./limits";
 /**
  * The vector store: a Map in module scope.
  *
- * Documents are keyed by an id minted at index time, and every question must
- * carry the id of the document it is asking about. That handshake is what stops
- * a question being answered from someone else's document: with a single shared
- * slot, visitor B indexing would silently overwrite visitor A's document, and
- * A's next question would be answered — confidently, with citations — from B's
- * text, disclosing it in the process.
+ * **It is a cache, not the source of truth.** That distinction is the whole
+ * design, and it is what makes the app survive serverless.
  *
- * ⚠️ KNOWN LIMITATION — still a demo store.
+ * Module-scope state lives in one process, so on Vercel a document indexed on
+ * instance 1 is simply absent when a question lands on instance 2. Treating the
+ * store as authoritative made that a dead end: the honest answer was a 409
+ * ("index it again"), and re-indexing could land on a third instance and fail
+ * again. A correct-but-unusable app.
  *
- * Module-level state lives in one server process:
- *   - Serverless instances do not share it. On Vercel, a document indexed on
- *     instance 1 is invisible to a question that lands on instance 2. The id
- *     handshake turns that into an honest 409 ("index it again") rather than a
- *     wrong answer, but it remains a real limitation.
- *   - It does not survive a restart, redeploy, or cold start.
+ * So the client keeps the document text — it already has it, it is on screen —
+ * and sends it with each question. A cache hit skips the embedding work; a miss
+ * re-embeds inline and answers anyway. Embedding a document costs about two
+ * hundredths of a cent, which is a good trade for never being wrong and never
+ * being stuck.
  *
- * In production this is a `pgvector` table or a managed vector DB, keyed by user
- * and document, with the id carried in a session rather than by the client.
+ * Documents are keyed by an id minted at index time, and a question must carry
+ * the id of the document it asks about. That handshake is what stops a question
+ * being answered from someone else's document: with a single shared slot,
+ * visitor B indexing would overwrite visitor A's, and A's next question would be
+ * answered — confidently, with citations — from B's text, disclosing it.
+ *
+ * In production the cache becomes a `pgvector` table or a managed vector DB,
+ * keyed by user and document, with the id carried in a session rather than by
+ * the client. The shape of the code does not change; only where the Map lives.
  */
 
 export type StoredChunk = Chunk & { embedding: number[] };

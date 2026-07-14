@@ -1,64 +1,47 @@
 import { errorResponse, logUsage, rateLimit, readTextBody } from "@/lib/api";
-import { chunkText } from "@/lib/chunk";
-import { embed } from "@/lib/embeddings";
-import { saveDocument, type StoredChunk } from "@/lib/store";
+import { indexDocument } from "@/lib/indexer";
 
 /**
- * Index a document so it can be questioned: chunk it, embed every chunk, store
- * the vectors, and return the id the client must present when asking questions.
+ * Index a document up front so questions about it are fast.
  *
- * That id is what binds a question to the document it was asked against — see
- * lib/store.ts for why a single shared slot was not safe.
+ * This is the fast path, not the only path: /api/ask indexes on the fly when the
+ * cache does not have the document (a cold serverless instance, a redeploy, an
+ * eviction). Doing it here means the user pays the embedding latency once, when
+ * they click "Index", instead of on their first question.
  */
 export async function POST(request: Request) {
-  // Rate limit first — before parsing, before any upstream call, so a limited
-  // caller costs nothing but a Map lookup.
   const limited = rateLimit(request);
   if (limited) return limited;
 
   const body = await readTextBody(request);
   if (!body.ok) return body.response;
 
-  // If the client is re-indexing, it tells us which document it is replacing so
-  // the old one can be dropped. Otherwise every re-index leaks a slot, and enough
-  // clicks would evict other visitors' documents from a bounded store.
+  // If the client is re-indexing, it names the document this one supersedes, so
+  // the old entry is dropped rather than leaking a slot in a bounded cache.
   const replacing = body.raw?.documentId;
   const previousId = typeof replacing === "string" ? replacing : null;
 
-  const chunks = chunkText(body.text);
-  if (chunks.length === 0) {
-    return Response.json({ error: "Nothing to index." }, { status: 400 });
-  }
-
   try {
-    // One batched request for all chunks, not one request per chunk.
-    // "document" — these are passages to be retrieved, not questions.
-    const { vectors, tokens } = await embed(
-      chunks.map((c) => c.text),
-      "document",
+    const { document, embeddingTokens } = await indexDocument(
+      body.text,
+      previousId,
     );
 
-    // /api/index spends money and used to log nothing at all.
     logUsage("/api/index", {
       input_tokens: 0,
       output_tokens: 0,
-      embedding_tokens: tokens,
+      embedding_tokens: embeddingTokens,
     });
-
-    // embed() guarantees one vector per input, so this pairing is sound.
-    const stored: StoredChunk[] = chunks.map((chunk, i) => ({
-      ...chunk,
-      embedding: vectors[i],
-    }));
-
-    const document = saveDocument(stored, previousId);
 
     return Response.json({
       documentId: document.id,
-      chunks: stored.length,
-      dimensions: vectors[0].length,
+      chunks: document.chunks.length,
+      dimensions: document.chunks[0].embedding.length,
     });
   } catch (err) {
+    if (err instanceof Error && err.message === "Nothing to index.") {
+      return Response.json({ error: "Nothing to index." }, { status: 400 });
+    }
     return errorResponse(err, "/api/index");
   }
 }
