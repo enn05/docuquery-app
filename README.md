@@ -8,7 +8,7 @@ everything the model returns before any of it reaches the screen.
 
 **Live demo:** https://docuquery-app-mu.vercel.app · **Repo:** https://github.com/enn05/docuquery-app
 
-> _(add a screenshot or a 20-second GIF here — it is the first thing anyone looks at)_
+![DocuQuery — upload a document or paste text, then summarize, extract data, or ask questions](docs/screenshot.png)
 
 ---
 
