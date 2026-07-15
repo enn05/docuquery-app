@@ -16,7 +16,8 @@ everything the model returns before any of it reaches the screen.
 
 1. **Upload** a `.txt` or PDF (up to 5 MB). Text is extracted server-side and shown in a
    textarea, so you see exactly what the model will see — a bad PDF parse is visible, not silent.
-2. **Summarize** — a concise, factual summary.
+2. **Summarize** — a concise, factual summary, streamed token-by-token as the model
+   writes it (the summary is the longest output, so it's where streaming is felt most).
 3. **Extract data** — a typed JSON object (document type, parties, key dates, amounts),
    validated against a schema before it is rendered as a table.
 4. **Ask questions** — answered only from retrieved excerpts of your document, with inline
