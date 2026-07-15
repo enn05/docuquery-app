@@ -129,6 +129,13 @@ export default function Home() {
   }
 
   async function handleSummarize() {
+    // Snapshot the text this run is for. The summary now streams in over several
+    // seconds, during which the user can keep typing — and updateText() clears
+    // `summary` when they do. Without this guard the in-flight loop would keep
+    // appending, resurrecting a summary of text no longer on screen. Same
+    // stale-result defence as handleIndex/handleAsk, via the existing textRef.
+    const summarizedText = text;
+
     setLoading(true);
     setError("");
     setSummary("");
@@ -138,13 +145,42 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      const data = await res.json();
+
+      // Errors are returned as JSON before streaming begins, so their status
+      // codes are intact — read them the old way.
       if (!res.ok) {
+        const data = await res.json();
         setError(data.error ?? "Something went wrong.");
-      } else {
-        setSummary(data.summary);
+        return;
+      }
+
+      // Success streams the summary as plain text. Append each chunk as it lands.
+      if (!res.body) {
+        setError("The server returned an empty response. Please try again.");
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // The text moved on while we were streaming — stop and discard the rest.
+        if (textRef.current !== summarizedText) {
+          await reader.cancel();
+          return;
+        }
+        setSummary((prev) => prev + decoder.decode(value, { stream: true }));
+      }
+      // Flush any bytes the decoder buffered mid-character on the final chunk.
+      if (textRef.current === summarizedText) {
+        const tail = decoder.decode();
+        if (tail) setSummary((prev) => prev + tail);
       }
     } catch {
+      // A mid-stream failure leaves a truncated summary on screen. For a factual
+      // tool, a partial shown as if complete is worse than none — clear it so it
+      // is never mistaken for a finished summary, then surface the error.
+      if (textRef.current === summarizedText) setSummary("");
       setError("Could not reach the server. Check your connection and try again.");
     } finally {
       setLoading(false);
