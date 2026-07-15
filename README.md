@@ -6,7 +6,7 @@ questions answered from the document itself — with citations you can open and 
 Next.js 16, the Claude API for generation, Voyage AI for embeddings, and Zod validating
 everything the model returns before any of it reaches the screen.
 
-**Live demo:** _(add your Vercel URL)_ · **Repo:** https://github.com/enn05/docuquery-app
+**Live demo:** https://docuquery-app-mu.vercel.app · **Repo:** https://github.com/enn05/docuquery-app
 
 > _(add a screenshot or a 20-second GIF here — it is the first thing anyone looks at)_
 
