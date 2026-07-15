@@ -198,6 +198,12 @@ Listed honestly, because pretending this is production-grade would be the wrong 
   not solve a large *output* — extracting from a 200-line invoice can still exceed the output
   cap. The route detects that (`stop_reason: max_tokens`) and says so, rather than retrying into
   the same wall.
+- **Scanned / image-only PDFs are refused, not read.** A PDF with no text layer (a scan, a
+  photo, an "export as image") yields no characters to extract, so the route returns a specific
+  422 — *"looks like a scanned PDF… OCR would be needed"* — rather than handing the model an
+  empty string to hallucinate over. A deliberate choice: the failure is visible. Reading them is
+  a solved problem (Claude is multimodal — send the pages as images), gated behind a per-page
+  cost cap that is future work, not v1.
 - **Tables are a weak fit for naive chunking.** A chunk far from the header row arrives as bare
   numbers with no column names. Structured extraction is the better tool for tabular data.
 - **"List every X" questions are unreliable** — retrieval fetches the top *k* chunks, so an
